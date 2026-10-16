@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADB &amp; Fastboot Tool</title>
+<style>
+:root{--bg:#f5f6f4;--panel:#fff;--ink:#1b1f1d;--mute:#5d665f;--line:#d6dbd6;--accent:#0b6e4f;--accent-ink:#fff;--warn:#b3261e;--log:#101412;--log-ink:#c9e8d8}
+@media (prefers-color-scheme:dark){:root{--bg:#121513;--panel:#1a1e1b;--ink:#e6ebe7;--mute:#98a39b;--line:#2d352f;--accent:#46c28f;--accent-ink:#06210f;--warn:#ff8a80;--log:#0a0c0b;--log-ink:#b6e3cb}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,sans-serif}
+main{max-width:720px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:1.4rem;margin:0 0 4px}
+h2{font-size:1rem;margin:0 0 10px}
+p.sub{margin:0 0 20px;color:var(--mute)}
+section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
+section[hidden]{display:none}
+button{font:inherit;padding:10px 14px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+button.danger{color:var(--warn);border-color:var(--warn)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+input[type=text],input[type=file],select{font:inherit;width:100%;padding:9px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
+label{display:block;font-size:.9rem;color:var(--mute);margin:10px 0 4px}
+#status{font-weight:600}
+#status.ok{color:var(--accent)}
+pre{margin:0;background:var(--log);color:var(--log-ink);padding:12px;border-radius:8px;overflow:auto;max-height:340px;font:13px/1.45 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+progress{width:100%;height:10px;margin-top:10px}
+.note{font-size:.88rem;color:var(--mute);margin-top:8px}
+</style>
+</head>
+<body>
+<main>
+<h1>ADB &amp; Fastboot Tool</h1>
+<p class="sub">Connect a device in either mode. The tool detects which one it is and shows the matching controls.</p>
+
+<section>
+  <h2>Device</h2>
+  <div id="status">Not connected</div>
+  <div class="row">
+    <button class="primary" id="connect">Connect device</button>
+    <button id="disconnect" disabled>Disconnect</button>
+  </div>
+  <p class="note">The picker lists every USB device Chrome can see. For ADB, enable USB debugging on the target and tap Allow on its screen (tick "Always allow" so it only asks once). Close any desktop <code>adb</code> server first, since it holds the USB interface.</p>
+</section>
+
+<!-- ADB -->
+<section id="secAdb" hidden>
+  <h2>ADB: shell</h2>
+  <div class="row">
+    <button data-sh="getprop ro.product.model">Model</button>
+    <button data-sh="getprop ro.build.version.release">Android version</button>
+    <button data-sh="getprop ro.build.fingerprint">Build</button>
+    <button data-sh="dumpsys battery">Battery</button>
+    <button data-sh="pm list packages -3">User apps</button>
+    <button data-sh="df -h /data">Storage</button>
+  </div>
+  <label for="shcmd">Shell command</label>
+  <input type="text" id="shcmd" placeholder="e.g. ls /sdcard" autocomplete="off" autocapitalize="off">
+  <div class="row"><button id="runSh">Run</button></div>
+</section>
+
+<section id="secAdbReboot" hidden>
+  <h2>ADB: reboot into a mode</h2>
+  <div class="row">
+    <button data-rb="">System</button>
+    <button data-rb="bootloader">Bootloader (fastboot)</button>
+    <button data-rb="recovery">Recovery</button>
+    <button data-rb="sideload">Sideload</button>
+    <button data-rb="fastboot">fastbootd</button>
+  </div>
+  <p class="note">After the device reboots, press Connect again. Bootloader and fastbootd modes will then show the fastboot controls.</p>
+</section>
+
+<section id="secAdbFiles" hidden>
+  <h2>ADB: send files</h2>
+  <label for="pushFile">File</label>
+  <input type="file" id="pushFile">
+  <label for="pushPath">Destination on device</label>
+  <input type="text" id="pushPath" value="/sdcard/Download/" autocapitalize="off">
+  <progress id="pushProg" value="0" max="100" hidden></progress>
+  <div class="row">
+    <button id="pushBtn">Send file</button>
+    <button id="installBtn">Install as APK</button>
+  </div>
+  <p class="note">The destination can be a folder (ends with /) or a full file path. Install as APK ignores the destination.</p>
+</section>
+
+<!-- Fastboot -->
+<section id="secFb" hidden>
+  <h2>Fastboot: commands</h2>
+  <div class="row">
+    <button data-fb="getvar:product">Product</button>
+    <button data-fb="getvar:current-slot">Active slot</button>
+    <button data-fb="getvar:unlocked">Unlocked?</button>
+    <button data-fb="getvar:all">All variables</button>
+    <button data-fb="reboot">Reboot</button>
+    <button data-fb="reboot-bootloader">Reboot to bootloader</button>
+    <button data-fb="reboot-recovery">Reboot to recovery</button>
+  </div>
+  <label for="custom">Custom command</label>
+  <input type="text" id="custom" placeholder="e.g. oem device-info" autocomplete="off" autocapitalize="off">
+  <div class="row"><button id="runCustom">Run</button></div>
+</section>
+
+<section id="secFl" hidden>
+  <h2>Fastboot: flash image</h2>
+  <label for="part">Partition</label>
+  <select id="part">
+    <option>boot</option><option>init_boot</option><option>vendor_boot</option><option>recovery</option>
+    <option>dtbo</option><option>vbmeta</option><option>vbmeta_system</option>
+    <option>system</option><option>vendor</option><option>userdata</option><option value="other">other</option>
+  </select>
+  <input type="text" id="otherPart" placeholder="Partition name" style="display:none;margin-top:8px" autocapitalize="off">
+  <label for="file">Image file (.img, raw)</label>
+  <input type="file" id="file" accept=".img,.bin">
+  <progress id="prog" value="0" max="100" hidden></progress>
+  <div class="row"><button class="danger" id="flash">Flash image</button></div>
+  <p class="note">Flashing the wrong image can brick the device. Sparse images and files larger than the device's max download size aren't supported. The bootloader must be unlocked.</p>
+</section>
+
+<section>
+  <h2>Log</h2>
+  <pre id="log" aria-live="polite"></pre>
+</section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const logEl = $('log');
+const log = t => { logEl.textContent += t + '\n'; logEl.scrollTop = logEl.scrollHeight; };
+const enc = new TextEncoder(), dec = new TextDecoder();
+const hex = n => '0x' + n.toString(16).padStart(2, '0');
+let dev = null, epIn = null, epOut = null, busy = false, mode = null;
+
+if (!('usb' in navigator)) {
+  log('WebUSB is not available. Use Chrome or Edge (desktop, or Chrome on Android), over https or from a local file.');
+  $('connect').disabled = true;
+}
+
+/* ---------- USB discovery ---------- */
+const isFastboot = a => a.interfaceClass === 0xff && a.interfaceSubclass === 0x42 && a.interfaceProtocol === 0x03;
+const isAdb = a => a.interfaceClass === 0xff && a.interfaceSubclass === 0x42 && a.interfaceProtocol === 0x01;
+
+function describe(d) {
+  log(`Device: ${d.productName || 'unnamed'} (VID ${hex(d.vendorId)} PID ${hex(d.productId)})`);
+  for (const c of d.configurations) for (const i of c.interfaces) for (const a of i.alternates)
+    log(`  interface ${i.interfaceNumber}: class ${hex(a.interfaceClass)} sub ${hex(a.interfaceSubclass)} proto ${hex(a.interfaceProtocol)}` +
+        (isFastboot(a) ? '  <- fastboot' : isAdb(a) ? '  <- adb' : ''));
+}
+
+function findInterface(d, test) {
+  for (const c of d.configurations) for (const i of c.interfaces) for (const a of i.alternates)
+    if (test(a)) return { c, i, a };
+  return null;
+}
+
+async function connect() {
+  try {
+    const d = await navigator.usb.requestDevice({ filters: [] });
+    await d.open();
+    describe(d);
+    let kind = 'fastboot', found = findInterface(d, isFastboot);
+    if (!found) { kind = 'adb'; found = findInterface(d, isAdb); }
+    if (!found) {
+      log('No ADB or fastboot interface found. For ADB, enable USB debugging and set USB mode to file transfer. For fastboot, boot to the bootloader. Samsung Download mode, MediaTek and EDL modes are not supported.');
+      await d.close(); return;
+    }
+    if (d.configuration === null || d.configuration.configurationValue !== found.c.configurationValue)
+      await d.selectConfiguration(found.c.configurationValue);
+    await d.claimInterface(found.i.interfaceNumber);
+    if (found.a.alternateSetting) await d.selectAlternateInterface(found.i.interfaceNumber, found.a.alternateSetting);
+    epIn = found.a.endpoints.find(e => e.direction === 'in' && e.type === 'bulk');
+    epOut = found.a.endpoints.find(e => e.direction === 'out' && e.type === 'bulk');
+    dev = d;
+    if (kind === 'adb') {
+      log('ADB interface found. Authenticating... If the device shows an "Allow USB debugging?" prompt, tap Allow.');
+      try { await adbHandshake(); }
+      catch (e) { log('ADB handshake failed: ' + e.message); await disconnect(); return; }
+    }
+    mode = kind;
+    setUi();
+    $('status').textContent = `Connected (${kind === 'adb' ? 'ADB' : 'fastboot'}): ${d.productName || 'device'}`;
+    $('status').className = 'ok';
+    log(`Connected in ${kind} mode.`);
+  } catch (e) {
+    log('Connect failed: ' + e.message + (/claim/i.test(e.message) ? ' (another app or the adb server may be using the device)' : ''));
+  }
+}
+
+async function disconnect() {
+  try { if (dev) await dev.close(); } catch (e) {}
+  dev = null; mode = null; setUi();
+  $('status').textContent = 'Not connected'; $('status').className = '';
+}
+
+function setUi() {
+  $('secAdb').hidden = $('secAdbReboot').hidden = $('secAdbFiles').hidden = mode !== 'adb';
+  $('secFb').hidden = $('secFl').hidden = mode !== 'fastboot';
+  $('disconnect').disabled = !mode;
+}
+
+/* ---------- Fastboot ---------- */
+async function fbReply() {
+  for (;;) {
+    const r = await dev.transferIn(epIn.endpointNumber, epIn.packetSize || 64);
+    const s = dec.decode(r.data), tag = s.slice(0, 4), body = s.slice(4);
+    if (tag === 'INFO') { log('(bootloader) ' + body); continue; }
+    return { tag, body };
+  }
+}
+async function fbCommand(cmd) {
+  await dev.transferOut(epOut.endpointNumber, enc.encode(cmd));
+  return fbReply();
+}
+async function fbRun(cmd) {
+  if (!dev || busy) return;
+  busy = true; log('> ' + cmd);
+  try {
+    const r = await fbCommand(cmd);
+    log(r.tag + (r.body ? ' ' + r.body : ''));
+    if (r.tag === 'FAIL') log('Command failed. Many commands are blocked while the bootloader is locked.');
+    if (/^reboot/.test(cmd) && r.tag === 'OKAY') { log('Device is rebooting.'); await disconnect(); }
+  } catch (e) {
+    log('Error: ' + e.message);
+    if (/^reboot/.test(cmd)) await disconnect();
+  }
+  busy = false;
+}
+async function fbFlash() {
+  if (!dev || busy) return;
+  const file = $('file').files[0];
+  const part = $('part').value === 'other' ? $('otherPart').value.trim() : $('part').value;
+  if (!file) return log('Choose an image file first.');
+  if (!part) return log('Enter a partition name.');
+  if (!confirm(`Flash ${file.name} (${file.size} bytes) to "${part}"? This overwrites the partition.`)) return;
+  busy = true;
+  const prog = $('prog'); prog.hidden = false; prog.value = 0;
+  try {
+    const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+    if (head[0] === 0x3a && head[1] === 0xff && head[2] === 0x26 && head[3] === 0xed)
+      throw new Error('This is a sparse image. Convert it with simg2img first, or flash it with the PC fastboot tool.');
+    const mv = await fbCommand('getvar:max-download-size');
+    const max = parseInt(mv.body, 16);
+    log('max-download-size: ' + (isNaN(max) ? 'unknown' : max + ' bytes'));
+    if (!isNaN(max) && file.size > max) throw new Error('Image is larger than the device download limit. Use the PC fastboot tool for sparse flashing.');
+    const sz = file.size.toString(16).padStart(8, '0');
+    log('> download:' + sz);
+    const d = await fbCommand('download:' + sz);
+    if (d.tag !== 'DATA') throw new Error('Device refused download: ' + d.tag + ' ' + d.body);
+    const CH = 1024 * 1024;
+    for (let off = 0; off < file.size; off += CH) {
+      await dev.transferOut(epOut.endpointNumber, await file.slice(off, Math.min(off + CH, file.size)).arrayBuffer());
+      prog.value = Math.round(Math.min(off + CH, file.size) / file.size * 100);
+    }
+    const done = await fbReply();
+    if (done.tag !== 'OKAY') throw new Error('Download failed: ' + done.tag + ' ' + done.body);
+    log('Upload finished. Flashing ' + part + '...');
+    const f = await fbCommand('flash:' + part);
+    log(f.tag + (f.body ? ' ' + f.body : ''));
+    log(f.tag === 'OKAY' ? 'Flash complete.' : 'Flash failed. Check that the bootloader is unlocked and the partition name is correct.');
+  } catch (e) { log('Error: ' + e.message); }
+  prog.hidden = true; busy = false;
+}
+
+/* ---------- ADB protocol ---------- */
+const A = { CNXN: 0x4e584e43, AUTH: 0x48545541, OPEN: 0x4e45504f, OKAY: 0x59414b4f, WRTE: 0x45545257, CLSE: 0x45534c43 };
+let maxData = 4096, nextId = 1;
+const le32 = n => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; };
+const cat = (...parts) => { const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0)); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; } return out; };
+
+async function sendMsg(cmd, a0, a1, data = new Uint8Array(0)) {
+  let sum = 0; for (let i = 0; i < data.length; i++) sum = (sum + data[i]) >>> 0;
+  const h = cat(le32(cmd), le32(a0), le32(a1), le32(data.length), le32(sum), le32(cmd ^ 0xffffffff));
+  await dev.transferOut(epOut.endpointNumber, h);
+  if (data.length) await dev.transferOut(epOut.endpointNumber, data);
+}
+async function readMsg() {
+  let r = await dev.transferIn(epIn.endpointNumber, 24);
+  while (r.data.byteLength === 0) r = await dev.transferIn(epIn.endpointNumber, 24);
+  const v = r.data, cmd = v.getUint32(0, true), a0 = v.getUint32(4, true), a1 = v.getUint32(8, true), len = v.getUint32(12, true);
+  let data = new Uint8Array(0);
+  if (len) {
+    data = new Uint8Array(len);
+    let got = 0;
+    while (got < len) {
+      const d = await dev.transferIn(epIn.endpointNumber, len - got);
+      data.set(new Uint8Array(d.data.buffer, d.data.byteOffset, d.data.byteLength), got);
+      got += d.data.byteLength;
+    }
+  }
+  return { cmd, a0, a1, data };
+}
+
+/* RSA key handling: ADB signs the raw 20-byte token, which WebCrypto can't do, so signing is done with BigInt. */
+const b64u = s => { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return Uint8Array.from(atob(s), c => c.charCodeAt(0)); };
+const toBig = bytes => { let x = 0n; for (const b of bytes) x = (x << 8n) | BigInt(b); return x; };
+const fromBig = (x, len) => { const out = new Uint8Array(len); for (let i = len - 1; i >= 0; i--) { out[i] = Number(x & 0xffn); x >>= 8n; } return out; };
+function modPow(b, e, m) { let r = 1n; b %= m; while (e > 0n) { if (e & 1n) r = r * b % m; b = b * b % m; e >>= 1n; } return r; }
+
+let keyJwk = null;
+async function getKey() {
+  if (keyJwk) return keyJwk;
+  try { const s = localStorage.getItem('adbkey'); if (s) return (keyJwk = JSON.parse(s)); } catch (e) {}
+  log('Generating a new ADB key (one time)...');
+  const k = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-1' }, true, ['sign']);
+  keyJwk = await crypto.subtle.exportKey('jwk', k.privateKey);
+  try { localStorage.setItem('adbkey', JSON.stringify(keyJwk)); } catch (e) { log('Could not save the key; the device will ask for approval again next time.'); }
+  return keyJwk;
+}
+async function signToken(token) {
+  const k = await getKey(), n = toBig(b64u(k.n)), d = toBig(b64u(k.d));
+  const prefix = Uint8Array.from([0x30,0x21,0x30,0x09,0x06,0x05,0x2b,0x0e,0x03,0x02,0x1a,0x05,0x00,0x04,0x14]);
+  const t = cat(prefix, token), pad = 256 - t.length - 3;
+  const em = cat(Uint8Array.from([0, 1]), new Uint8Array(pad).fill(0xff), Uint8Array.from([0]), t);
+  return fromBig(modPow(toBig(em), d, n), 256);
+}
+async function publicKeyBytes() {
+  const k = await getKey(), n = toBig(b64u(k.n)), M = 0xffffffffn;
+  let inv = n & M; for (let i = 0; i < 5; i++) inv = (inv * (2n - (n & M) * inv)) & M;
+  const n0inv = Number((-inv) & M), rr = (1n << 4096n) % n;
+  const words = [64, n0inv];
+  for (let i = 0; i < 64; i++) words.push(Number((n >> BigInt(32 * i)) & M));
+  for (let i = 0; i < 64; i++) words.push(Number((rr >> BigInt(32 * i)) & M));
+  words.push(65537);
+  const buf = cat(...words.map(le32));
+  let bin = ''; for (const b of buf) bin += String.fromCharCode(b);
+  return enc.encode(btoa(bin) + ' webadb@browser\0');
+}
+
+async function adbHandshake() {
+  await sendMsg(A.CNXN, 0x01000001, 256 * 1024, enc.encode('host::\0'));
+  let signed = false;
+  for (;;) {
+    const m = await readMsg();
+    if (m.cmd === A.CNXN) {
+      maxData = Math.min(m.a1 || 4096, 256 * 1024);
+      log('Device: ' + dec.decode(m.data).replace(/\0/g, ''));
+      return;
+    }
+    if (m.cmd === A.AUTH && m.a0 === 1) {
+      if (!signed) { await sendMsg(A.AUTH, 2, 0, await signToken(m.data)); signed = true; }
+      else { await sendMsg(A.AUTH, 3, 0, await publicKeyBytes()); log('Waiting for you to approve this computer on the device...'); }
+    }
+  }
+}
+
+async function openStream(service) {
+  const local = nextId++;
+  await sendMsg(A.OPEN, local, 0, enc.encode(service + '\0'));
+  for (;;) {
+    const m = await readMsg();
+    if (m.a1 !== local) continue;
+    if (m.cmd === A.OKAY) return { local, remote: m.a0 };
+    if (m.cmd === A.CLSE) throw new Error('Device refused service: ' + service);
+  }
+}
+async function readStream(s, onData) {
+  for (;;) {
+    const m = await readMsg();
+    if (m.a1 !== s.local) continue;
+    if (m.cmd === A.WRTE) { await sendMsg(A.OKAY, s.local, s.remote); onData(m.data); }
+    else if (m.cmd === A.CLSE) { try { await sendMsg(A.CLSE, s.local, s.remote); } catch (e) {} return; }
+  }
+}
+async function writeStream(s, data, onData) {
+  await sendMsg(A.WRTE, s.local, s.remote, data);
+  for (;;) {
+    const m = await readMsg();
+    if (m.a1 !== s.local) continue;
+    if (m.cmd === A.OKAY) return;
+    if (m.cmd === A.WRTE) { await sendMsg(A.OKAY, s.local, s.remote); if (onData) onData(m.data); }
+    else if (m.cmd === A.CLSE) throw new Error('Device closed the stream');
+  }
+}
+
+async function adbShell(cmd, quiet) {
+  const s = await openStream('shell:' + cmd);
+  const td = new TextDecoder(); let out = '';
+  await readStream(s, d => { out += td.decode(d, { stream: true }); });
+  if (!quiet) log(out.replace(/\r\n/g, '\n').trimEnd() || '(no output)');
+  return out;
+}
+async function runShell(cmd) {
+  if (!dev || busy || !cmd) return;
+  busy = true; log('$ ' + cmd);
+  try { await adbShell(cmd); } catch (e) { log('Error: ' + e.message); }
+  busy = false;
+}
+async function adbReboot(target) {
+  if (!dev || busy) return;
+  if (!confirm('Reboot the device' + (target ? ' into ' + target : '') + '?')) return;
+  busy = true; log('> reboot ' + target);
+  try { await openStream('reboot:' + target); } catch (e) {}
+  log('Device is rebooting. Press Connect again when it is back.');
+  await disconnect(); busy = false;
+}
+async function adbPush(file, path, prog) {
+  const s = await openStream('sync:');
+  const spec = enc.encode(path + ',33206');
+  await writeStream(s, cat(enc.encode('SEND'), le32(spec.length), spec));
+  const CH = Math.min(65536, maxData - 8);
+  for (let off = 0; off < file.size; off += CH) {
+    const chunk = new Uint8Array(await file.slice(off, off + CH).arrayBuffer());
+    await writeStream(s, cat(enc.encode('DATA'), le32(chunk.length), chunk));
+    if (prog) prog.value = Math.round(Math.min(off + CH, file.size) / file.size * 100);
+  }
+  await writeStream(s, cat(enc.encode('DONE'), le32(Math.floor(Date.now() / 1000))));
+  let resp = new Uint8Array(0);
+  while (resp.length < 8) {
+    const m = await readMsg();
+    if (m.a1 !== s.local) continue;
+    if (m.cmd === A.WRTE) { await sendMsg(A.OKAY, s.local, s.remote); resp = cat(resp, m.data); }
+    else if (m.cmd === A.CLSE) break;
+  }
+  const id = dec.decode(resp.slice(0, 4));
+  if (id !== 'OKAY') throw new Error('Push failed' + (resp.length > 8 ? ': ' + dec.decode(resp.slice(8)) : ' (check the destination path and permissions)'));
+  try { await writeStream(s, cat(enc.encode('QUIT'), le32(0))); } catch (e) {}
+}
+async function doPush(install) {
+  if (!dev || busy) return;
+  const file = $('pushFile').files[0];
+  if (!file) return log('Choose a file first.');
+  let path = $('pushPath').value.trim();
+  if (install) path = '/data/local/tmp/_install.apk';
+  else if (!path || path.endsWith('/')) path += file.name;
+  busy = true;
+  const prog = $('pushProg'); prog.hidden = false; prog.value = 0;
+  try {
+    log(`Sending ${file.name} (${file.size} bytes) to ${path}`);
+    await adbPush(file, path, prog);
+    log('File sent.');
+    if (install) {
+      log('Installing...');
+      const out = await adbShell(`pm install -r ${path}`, true);
+      log(out.trim());
+      await adbShell(`rm ${path}`, true);
+    }
+  } catch (e) { log('Error: ' + e.message); }
+  prog.hidden = true; busy = false;
+}
+
+/* ---------- Wiring ---------- */
+$('connect').onclick = connect;
+$('disconnect').onclick = disconnect;
+$('flash').onclick = fbFlash;
+$('runCustom').onclick = () => { const v = $('custom').value.trim(); if (v) fbRun(v); };
+$('custom').onkeydown = e => { if (e.key === 'Enter') $('runCustom').click(); };
+$('runSh').onclick = () => runShell($('shcmd').value.trim());
+$('shcmd').onkeydown = e => { if (e.key === 'Enter') $('runSh').click(); };
+$('pushBtn').onclick = () => doPush(false);
+$('installBtn').onclick = () => doPush(true);
+document.querySelectorAll('[data-fb]').forEach(b => b.onclick = () => fbRun(b.dataset.fb));
+document.querySelectorAll('[data-sh]').forEach(b => b.onclick = () => runShell(b.dataset.sh));
+document.querySelectorAll('[data-rb]').forEach(b => b.onclick = () => adbReboot(b.dataset.rb));
+$('part').onchange = () => { $('otherPart').style.display = $('part').value === 'other' ? 'block' : 'none'; };
+if (navigator.usb) navigator.usb.addEventListener('disconnect', e => { if (e.device === dev) { log('Device disconnected.'); disconnect(); } });
+</script>
+</body>
+</html>
